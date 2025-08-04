@@ -102,7 +102,7 @@ class GroupedQuerySelfAttentionMixin(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.head_dim, bias=bias)
         self.out_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
         
-    def forward(self, x, attn_mask=None, is_causal=False):
+    def forward(self, x, attn_mask=None, is_causal=True):
         batch_size, seq_len, _ = x.shape
         
         q = self.q_proj(x)  
