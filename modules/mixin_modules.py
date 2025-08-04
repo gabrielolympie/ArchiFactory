@@ -5,7 +5,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from einops import rearrange, einsum, repeat
 
-from fla.layers import MultiScaleRetention, Mamba2, RWKV6Attention
+from fla.layers import MultiScaleRetention,Mamba2,RWKV6Attention
+from modules.archi_modules import RMSNorm
     
 class RNNMixin(nn.Module):
     def __init__(self, hidden_size, num_attention_heads=None, num_key_value_heads=None):
@@ -127,85 +128,129 @@ class GroupedQuerySelfAttentionMixin(nn.Module):
         
         return output
     
+
 class MultiHeadLatentAttentionMixin(nn.Module):
-    def __init__(self, hidden_size, num_attention_heads, latent_size=None, dropout=0.0, bias=True):
+    def __init__(
+        self, 
+        hidden_size,
+        num_attention_heads,
+        num_key_value_heads = None,
+        q_latent_dim = None,
+        kv_lora_dim = None,
+        dropout=0.0
+    ):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_attention_heads = num_attention_heads
-        self.latent_size = latent_size if latent_size is not None else hidden_size // 4  # Default to 1/4 of hidden size
+        
+        # assert config.v_head_dim is not None , f"v_head_dim is not defined {config.v_head_dim=}"
+        # assert config.q_lora_rank is not None , f"q_lora_rank is not defined {config.q_lora_rank=}"
+        # assert config.kv_lora_rank is not None , f"kv_lora_rank is not defined {config.kv_lora_rank=}"
+        # assert config.rope_head_dim is not None , f"rope_head_dim is not defined {config.rope_head_dim=}"
+        
+        # self.config = config
+        
+        ## Example from deepseek v2 lite config
+        # "hidden_size": 2048,
+        # "kv_lora_rank": 512, // hidden_size / 4
+        # "num_attention_heads" : 16, 
+        # "num_key_value_heads": 16,
+        # "qk_nope_head_dim": 128, // hidden_size / 16
+        # "qk_rope_head_dim": 64, // hidden_size / 32
+        
+        self.dim = hidden_size
+        self.num_heads = num_attention_heads
+        self.v_head_dim = hidden_size // num_attention_heads
+        
+        self.nope_head_dim = max(hidden_size // num_attention_heads, 64) ## avoid getting too small
+        self.rope_head_dim = max(hidden_size // (num_attention_heads * 2), 32) ## avoid getting too small
+        
+        if q_latent_dim is None:
+            q_latent_dim = hidden_size // 2
+            
+        if kv_lora_dim is None:
+            kv_lora_dim = hidden_size // 4
+        
+        self.q_lora_rank = q_latent_dim
+        self.kv_lora_rank = kv_lora_dim
         
         self.dropout = dropout
         
-        self.head_dim = hidden_size // num_attention_heads
+        # note: head dim of query and key if different from head dim of value
         
-        assert self.head_dim * num_attention_heads == self.hidden_size, (
-            f"hidden_size must be divisible by num_attention_heads (got `hidden_size`: {self.hidden_size} "
-            f"and `num_attention_heads`: {num_attention_heads})."
-        )
+        # (attention_dim == num_head*head_dim) > d_model in deepseekv2
+        # this is dim between wV and wQ
+        self.value_dim = self.num_heads * self.v_head_dim
         
-        # Projections for input tokens
-        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
-        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
-        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
+        # this is dims between wQ and wK
+        self.nope_dim = self.num_heads * self.nope_head_dim
+        self.rope_dim = self.num_heads * self.rope_head_dim  
         
-        # Projections for latent tokens
-        self.latent_q_proj = nn.Linear(self.latent_size, hidden_size, bias=bias)
-        self.latent_k_proj = nn.Linear(self.latent_size, hidden_size, bias=bias)
-        self.latent_v_proj = nn.Linear(self.latent_size, hidden_size, bias=bias)
+        # query compression
+        self.compress_q_linear = nn.Linear(self.dim, self.q_lora_rank, bias=False)  # W_DQ
         
-        # Output projection
-        self.out_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.decompress_q_nope = nn.Linear(self.q_lora_rank, self.nope_dim, bias=False)
+        self.decompress_q_rope = nn.Linear(self.q_lora_rank, self.rope_dim, bias=False)
         
-        # Learnable latent tokens (initialized randomly)
-        self.latent_tokens = nn.Parameter(torch.randn(1, self.latent_size, self.latent_size))
+        self.q_norm = RMSNorm(self.q_lora_rank)
         
-    def forward(self, x, attn_mask=None, is_causal=False):
+        
+        # key and value compression
+        self.compress_kv_linear = nn.Linear(self.dim, self.kv_lora_rank, bias=False)  # W_DKV
+        self.decompress_k_nope = nn.Linear(self.kv_lora_rank, self.nope_dim, bias=False)
+        self.decompress_v_linear = nn.Linear(self.kv_lora_rank, self.value_dim, bias=False)
+        self.kv_norm = RMSNorm(self.kv_lora_rank)
+        
+        
+        self.k_rope_linear = nn.Linear(self.dim, self.rope_head_dim  , bias=False)
+        # self.rope_norm = RMSNorm(self.rope_dim) # not in deepseekv2
+
+        self.proj = nn.Linear(self.value_dim , self.dim, bias=False)
+        self.res_dropout = nn.Dropout(p=dropout)
+        
+        
+    def forward(self, x: Tensor):
         batch_size, seq_len, _ = x.shape
+
+        compressed_q = self.compress_q_linear(x)
+        norm_q = self.q_norm(compressed_q)
+        query_nope:Tensor = self.decompress_q_nope(norm_q)
+        query_rope:Tensor = self.decompress_q_rope(norm_q)
+
+        compressed_kv = self.compress_kv_linear(x)
+        norm_kv = self.kv_norm(compressed_kv)
+        key_nope: Tensor = self.decompress_k_nope(norm_kv)
+        value: Tensor = self.decompress_v_linear(norm_kv)
         
-        # Get latent tokens for this batch
-        latent = self.latent_tokens.expand(batch_size, -1, -1)
+        key_rope:Tensor = self.k_rope_linear(x)
+        # norm_rope = self.rope_norm(key_rope)
+
+        query_nope = query_nope.view(batch_size, seq_len, self.num_heads, self.nope_head_dim).transpose(1,2)
+        query_rope = query_rope.view(batch_size, seq_len, self.num_heads, self.rope_head_dim).transpose(1,2)
         
-        # Project input tokens
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
+        key_rope = key_rope.view(batch_size, seq_len, 1, self.rope_head_dim).transpose(1,2)
+        key_nope = key_nope.view(batch_size, seq_len, self.num_heads, self.nope_head_dim).transpose(1,2)
         
-        # Project latent tokens
-        latent_q = self.latent_q_proj(latent)
-        latent_k = self.latent_k_proj(latent)
-        latent_v = self.latent_v_proj(latent)
+        value = value.view(batch_size, seq_len, self.num_heads, self.v_head_dim).transpose(1,2)
         
-        # Reshape for multi-head attention
-        q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        # *** the line that fixes MLA :) ***
+        # key_rope = key_rope/self.num_heads 
+
+        # q_rope,k_rope = apply_rope(query_rope,key_rope, cis=freqs_cis)
         
-        latent_q = latent_q.view(batch_size, self.latent_size, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        latent_k = latent_k.view(batch_size, self.latent_size, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        latent_v = latent_v.view(batch_size, self.latent_size, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        q_recombined = torch.empty((batch_size,self.num_heads,seq_len, self.rope_head_dim + self.nope_head_dim), device=x.device).to(x.dtype)
+        k_recombined = torch.empty((batch_size, self.num_heads, seq_len, self.rope_head_dim + self.nope_head_dim), device=x.device).to(x.dtype)
         
-        # Compute cross attention between latent queries and input keys/values
-        attn_output = F.scaled_dot_product_attention(
-            latent_q, k, v,
-            attn_mask=attn_mask,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal
-        )
+        q_recombined[:,:,:,:self.nope_head_dim] = query_nope
+        # q_recombined[:,:,:,self.nope_head_dim:] = q_rope
         
-        # Compute cross attention between input queries and latent keys/values
-        latent_attn_output = F.scaled_dot_product_attention(
-            q, latent_k, latent_v,
-            attn_mask=None,  # Typically no mask for latent attention
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=False
-        )
-        
-        # Combine the attention outputs
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, self.latent_size, self.hidden_size)
-        latent_attn_output = latent_attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
-        
-        # You can choose how to combine these - here we just return the latent-attended input tokens
-        # Alternatively, you could concatenate or add them
-        output = self.out_proj(latent_attn_output)
-        
+        # k_rope = torch.repeat_interleave(k_rope, self.num_heads, dim=1) # >> you dont need to do this <<
+        # 👇 broadcasting will do replication krope to all heads automagically
+        k_recombined[:,:,:,:self.nope_head_dim] = key_nope
+        # k_recombined[:,:,:,self.nope_head_dim:] = k_rope
+
+        output = F.scaled_dot_product_attention(q_recombined, k_recombined, value, is_causal=True, dropout_p=self.dropout)
+
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.num_heads * self.v_head_dim)
+
+        output = self.proj(output)
+        output = self.res_dropout(output)
         return output
