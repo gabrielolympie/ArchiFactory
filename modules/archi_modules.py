@@ -11,12 +11,16 @@ from copy import deepcopy
 
 def count_parameters(stack):
     total_parameters = sum(p.numel() for p in stack.parameters())
-    ffn_parameters = sum(p.numel() for layer in stack.layers for p in layer.ffn_module.parameters())
-    mixin_parameters = sum(p.numel() for layer in stack.layers for p in layer.mixin_module.parameters())
+    embedding_parameters = sum(p.numel() for p in stack.embedding_module.parameters())
+    ffn_parameters = sum(p.numel() for layer in stack.stacked_mixin_block.layers for p in layer.ffn_module.parameters())
+    mixin_parameters = sum(p.numel() for layer in stack.stacked_mixin_block.layers for p in layer.mixin_module.parameters())
+    lm_head_parameters = sum(p.numel() for p in stack.lm_head_module.parameters())
     
     print(f"Total parameters: {total_parameters:,}")
+    print(f"Embedding parameters: {embedding_parameters:,}")
     print(f"Mixin parameters: {mixin_parameters:,}")
     print(f"FFN parameters: {ffn_parameters:,}")
+    print(f"LM Head parameters: {lm_head_parameters:,}")
 
 class RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -62,6 +66,19 @@ class MixinBlock(nn.Module):
             hidden_states = self.ffn_module(hidden_states)
         return hidden_states
 
+def init_weight(module, initializer_range=1e-2):
+    for name, named_module in module.named_modules():
+        if isinstance(named_module, nn.Linear):
+            named_module.weight.data.normal_(mean=0.0, std=initializer_range)
+            if named_module.bias is not None:
+                named_module.bias.data.zero_()
+                
+        elif isinstance(named_module, nn.Embedding):
+            named_module.weight.data.normal_(mean=0.0, std=initializer_range)
+            if named_module.padding_idx is not None:
+                named_module.weight.data[named_module.padding_idx].zero_()  
+        
+
 class StackedMixinBlock(nn.Module):
     def __init__(self, num_layers, hidden_size, initializer_range=1e-2, mixin_module=None, ffn_module=None, positionnal_module=None):
         super().__init__()
@@ -72,19 +89,12 @@ class StackedMixinBlock(nn.Module):
             layer.mixin_module.layer_id = i
             layer.ffn_module.layer_id = i
             
+        ## Init
+        init_weight(self.layers, initializer_range)
+
         self.positionnal_module = positionnal_module
-            
-        for name, module in self.named_modules():
-            if isinstance(module, nn.Linear):
-                module.weight.data.normal_(mean=0.0, std=initializer_range)
-                if module.bias is not None:
-                    module.bias.data.zero_()
-                    
-            elif isinstance(module, nn.Embedding):
-                module.weight.data.normal_(mean=0.0, std=initializer_range)
-                if module.padding_idx is not None:
-                    module.weight.data[module.padding_idx].zero_()   
-        
+        if self.positionnal_module is not None:
+            init_weight(self.positionnal_module, initializer_range)
         
     def forward(self, hidden_states):
         if self.positionnal_module is not None:
@@ -94,3 +104,58 @@ class StackedMixinBlock(nn.Module):
             hidden_states = layer(hidden_states)
             
         return hidden_states
+    
+class StackedMixinForCausalLM(nn.Module):
+    def __init__(
+        self,
+        num_layers,
+        hidden_size,
+        initializer_range=1e-2,
+        embedding_module=None,
+        final_norm_module=None,
+        lm_head_module=None,
+        mixin_module=None,
+        ffn_module=None,
+        positionnal_module=None,
+        freeze_lm_modules=True,
+        vocab_size=None,
+    ):
+        super().__init__()
+        self.embedding_module = embedding_module
+        self.final_norm_module = final_norm_module
+        self.lm_head_module = lm_head_module
+        self.stacked_mixin_block = StackedMixinBlock(num_layers, hidden_size, initializer_range, mixin_module, ffn_module, positionnal_module)
+        
+        # Freeze weights in embedding_module, final_norm_module, and lm_head_module
+        if freeze_lm_modules:
+            for name, parameters in self.embedding_module.named_parameters():
+                parameters.requires_grad = False
+                
+            for name, parameters in self.final_norm_module.named_parameters():
+                parameters.requires_grad = False
+            
+            for name, parameters in self.lm_head_module.named_parameters():
+                parameters.requires_grad = False
+            
+        # Else, initialize them
+        else:
+            if self.embedding_module is None:
+                assert vocab_size is not None, "vocab_size must be provided if embedding_module is None"
+                self.embedding_module = nn.Embedding(vocab_size, hidden_size)
+                init_weight(self.embedding_module, initializer_range)
+            if self.final_norm_module is None:
+                self.final_norm_module = RMSNorm(hidden_size)
+                init_weight(self.final_norm_module, initializer_range)
+            if self.lm_head_module is None:
+                assert vocab_size is not None, "vocab_size must be provided if lm_head_module is None"
+                self.lm_head_module = nn.Linear(hidden_size, vocab_size)
+                init_weight(self.lm_head_module, initializer_range)
+            
+    def forward(self, input_ids):
+        hidden_states = self.embedding_module(input_ids)
+        hidden_states = self.stacked_mixin_block(hidden_states)
+        hidden_states = self.final_norm_module(hidden_states)
+        hidden_states = self.lm_head_module(hidden_states)
+        return hidden_states 
+            
+        

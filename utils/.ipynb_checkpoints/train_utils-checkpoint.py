@@ -71,11 +71,28 @@ def train_loop(
     test_set,
     epochs,
     batch_size,
+    max_length,
+    embed_tokens,
+    lm_head,
+    norm,
 ):
     # module is trainable, embed_tokens, lm_head, norm are frozen
+    module.train()
+    for parameters in embed_tokens.parameters():
+        parameters.requires_grad = False
+
+    for parameters in lm_head.parameters():
+        parameters.requires_grad = False
+
+    for parameters in norm.parameters():
+        parameters.requires_grad = False
 
     ## Move to device and ensure consistent dtype
     module = module.to(device=device, dtype=dtype)
+
+    embed_tokens = embed_tokens.to(device=device, dtype=dtype)
+    lm_head = lm_head.to(device=device, dtype=dtype)
+    norm = norm.to(device=device, dtype=dtype)
 
     ## Compile module
     if do_compile:
@@ -109,8 +126,15 @@ def train_loop(
         for i in tqdm(range(num_batches), desc="Batches", leave=False):
             input_ids = train_set[i * batch_size : (i + 1) * batch_size].to(device)
 
+            # embed
+            x = embed_tokens(input_ids)
+
             # forward pass
-            logits = module(input_ids)
+            y = module(x)
+
+            # norm
+            y = norm(y)
+            logits = lm_head(y)
 
             # loss
             shift_logits = logits[..., :-1, :].contiguous()
@@ -153,8 +177,11 @@ def train_loop(
             # Iterate directly over the test_dataloader
             for i in range(num_batches):
                 input_ids = test_set[batch_size * i : batch_size * (i + 1)].to(device)
-                
-                logits = module(input_ids)
+
+                x = embed_tokens(input_ids)
+                y = module(x)
+                y = norm(y)
+                logits = lm_head(y)
 
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = input_ids[..., 1:].contiguous()
