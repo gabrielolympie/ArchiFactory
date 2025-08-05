@@ -19,6 +19,7 @@ Due to that, today LLM benchmarks compare apples and tomatoes given that the pre
 As a result, the purpose of this repo is to enable testing several architecture with ablation study made on a single module at a time, with always the same pretraining dataset and post training methods.
 
 ## Structure of the repo
+```
 -root
 --modules : key modules to test
 ---archi_modules.py : modules to define the architecture as a whole, ie how many layers, what mixin, what ffn etc.
@@ -27,12 +28,14 @@ As a result, the purpose of this repo is to enable testing several architecture 
 ---mixin_modules.py : modules to define the mixin architecture, as of now GQA, LSTM, RNN, Mamba2, RWKV6 and retentive network are implemented, mostly based on the FLA library
 ---positionnal_modules.py : modules to define the positionnal embedding architecture, as of now only naive positionnal embedding is implemented
 --utils : training loop used to pretrain the architecture
+```
 
 ## How to use:
 You can check the notebook Benchmark.py, it is a simple example of how to use the modules to define an architecture and train it.
 
 To define a model, you simply need to use the StackedMixinForCausalLM class, which takes as input the following arguments:
 
+```python
 StackedMixinForCausalLM(
     num_layers | number of layers in the model
     hidden_size | hidden size of the model (if a pretrained embedding module or lm head is provided the size should match)
@@ -45,6 +48,7 @@ StackedMixinForCausalLM(
     mixin_module | mixin module to use
     ffn_module | ffn module to use
 )
+```
 
 The Benchmark notebook will then guide you to run the training loop.
 
