@@ -82,7 +82,7 @@ def train_loop(
         module = torch.compile(module)
 
     ## Create optimizer and loss
-    optimizer = AdEMAMix(module.parameters(), lr=3e-4)
+    optimizer = AdEMAMix(module.parameters(), lr=1e-4)
     loss_fn = torch.nn.CrossEntropyLoss()
 
     # Determine a reasonable number of workers for parallel data loading
@@ -178,5 +178,5 @@ def train_loop(
     os.makedirs(f"model_states/", exist_ok=True)
     torch.save(module.state_dict(), f"model_states/{run_name}.pth")
 
-    destruct_module_optimized(module)
+    destruct_module_optimized(module.stacked_mixin_block)
     memory_cleanup()

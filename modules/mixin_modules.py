@@ -36,7 +36,9 @@ class MultiScaleRetentionMixin(nn.Module):
         self.msr = MultiScaleRetention(
             hidden_size=hidden_size,
             num_heads=num_attention_heads,
-            num_kv_heads=num_key_value_heads
+            num_kv_heads=num_key_value_heads,
+            expand_k=1.0,
+            expand_v=1.0
         )
         
     def forward(self, x):
@@ -53,11 +55,10 @@ class Mamba2Mixin(nn.Module):
             num_heads=num_attention_heads,
             hidden_size=hidden_size,
             head_dim=head_dim,
-            state_size=8,
+            state_size=32,
             expand=1,
             n_groups=1,
-            chunk_size=8,
-            
+            chunk_size=128,
         )
         
     def forward(self, x):
@@ -72,6 +73,10 @@ class RWKV6Mixin(nn.Module):
         self.rwkv6 = RWKV6Attention(
             hidden_size = hidden_size,
             num_heads = num_attention_heads,
+            expand_k=0.5,
+            expand_v=0.5,
+            proj_low_rank_dim=64,
+            gate_low_rank_dim=64
         )
         
     def forward(self, x):
