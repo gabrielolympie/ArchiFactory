@@ -1,4 +1,6 @@
 *.pth
+*.pyc
 runs/
 legacy/
+checkpoints/
 cpu-optim.md

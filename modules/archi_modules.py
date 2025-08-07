@@ -121,12 +121,24 @@ class StackedMixinForCausalLM(nn.Module):
         vocab_size=None,
     ):
         super().__init__()
-        self.embedding_module = embedding_module
-        self.final_norm_module = final_norm_module
-        self.lm_head_module = lm_head_module
+        self.embedding_module = deepcopy(embedding_module)
+        self.final_norm_module = deepcopy(final_norm_module)
+        self.lm_head_module = deepcopy(lm_head_module)
         self.stacked_mixin_block = StackedMixinBlock(num_layers, hidden_size, initializer_range, mixin_module, ffn_module, positionnal_module)
+            
+        # Init modules if null
+        if self.embedding_module is None:
+            assert vocab_size is not None, "vocab_size must be provided if embedding_module is None"
+            self.embedding_module = nn.Embedding(vocab_size, hidden_size)
+            init_weight(self.embedding_module, initializer_range)
+        if self.final_norm_module is None:
+            self.final_norm_module = RMSNorm(hidden_size)
+            init_weight(self.final_norm_module, initializer_range)
+        if self.lm_head_module is None:
+            assert vocab_size is not None, "vocab_size must be provided if lm_head_module is None"
+            self.lm_head_module = nn.Linear(hidden_size, vocab_size)
+            init_weight(self.lm_head_module, initializer_range)
         
-        # Freeze weights in embedding_module, final_norm_module, and lm_head_module
         if freeze_lm_modules:
             for name, parameters in self.embedding_module.named_parameters():
                 parameters.requires_grad = False
@@ -137,25 +149,26 @@ class StackedMixinForCausalLM(nn.Module):
             for name, parameters in self.lm_head_module.named_parameters():
                 parameters.requires_grad = False
             
-        # Else, initialize them
-        else:
-            if self.embedding_module is None:
-                assert vocab_size is not None, "vocab_size must be provided if embedding_module is None"
-                self.embedding_module = nn.Embedding(vocab_size, hidden_size)
-                init_weight(self.embedding_module, initializer_range)
-            if self.final_norm_module is None:
-                self.final_norm_module = RMSNorm(hidden_size)
-                init_weight(self.final_norm_module, initializer_range)
-            if self.lm_head_module is None:
-                assert vocab_size is not None, "vocab_size must be provided if lm_head_module is None"
-                self.lm_head_module = nn.Linear(hidden_size, vocab_size)
-                init_weight(self.lm_head_module, initializer_range)
-            
-    def forward(self, input_ids):
+        self.vocab_size = self.embedding_module.weight.shape[0]
+        self.loss_fn = torch.nn.CrossEntropyLoss()
+        
+    def forward(self, input_ids, return_loss=False):
         hidden_states = self.embedding_module(input_ids)
         hidden_states = self.stacked_mixin_block(hidden_states)
         hidden_states = self.final_norm_module(hidden_states)
-        hidden_states = self.lm_head_module(hidden_states)
+        logits = self.lm_head_module(hidden_states)
+        
+        if return_loss:
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous()
+            
+            shift_logits = shift_logits.view(-1, self.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = self.loss_fn(shift_logits, shift_labels)
+            return loss
+        
         return hidden_states 
             
         
