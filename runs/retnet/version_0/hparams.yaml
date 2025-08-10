@@ -1,0 +1,10 @@
+alpha: 5
+betas: !!python/tuple
+- 0.9
+- 0.999
+- 0.9999
+learning_rate: 0.0002
+min_lr: 1.0e-06
+total_steps: 3906432
+warmup_steps: 64
+weight_decay: 0.0001

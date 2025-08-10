@@ -31,7 +31,7 @@ class LightningWrapper(pl.LightningModule):
         self.total_steps = total_steps
         self.min_lr = min_lr
         
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['model'])
         
     def forward(self, input_ids, return_loss=False):
         return self.model(input_ids, return_loss=return_loss)

@@ -169,6 +169,6 @@ class StackedMixinForCausalLM(nn.Module):
             loss = self.loss_fn(shift_logits, shift_labels)
             return loss
         
-        return hidden_states 
+        return logits 
             
         

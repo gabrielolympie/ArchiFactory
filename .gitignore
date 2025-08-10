@@ -1,6 +1,9 @@
 *.pth
 *.pyc
-runs/
 legacy/
 checkpoints/
 cpu-optim.md
+
+## Development files, not ready to share
+*private/*
+*Dev/*
