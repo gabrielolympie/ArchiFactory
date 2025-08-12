@@ -37,6 +37,7 @@ class LightningWrapper(pl.LightningModule):
         return self.model(input_ids, return_loss=return_loss)
     
     def training_step(self, batch):
+        
         loss=self.model(batch, return_loss=True)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss

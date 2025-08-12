@@ -11,9 +11,20 @@ from copy import deepcopy
 
 def count_parameters(stack):
     total_parameters = sum(p.numel() for p in stack.parameters())
+    
     embedding_parameters = sum(p.numel() for p in stack.embedding_module.parameters())
-    ffn_parameters = sum(p.numel() for layer in stack.stacked_mixin_block.layers for p in layer.ffn_module.parameters())
-    mixin_parameters = sum(p.numel() for layer in stack.stacked_mixin_block.layers for p in layer.mixin_module.parameters())
+    
+    try:
+        ffn_parameters = sum(p.numel() for layer in stack.stacked_mixin_block.layers for p in layer.ffn_module.parameters())
+    except:
+        ffn_parameters = 0
+    
+    try:
+        mixin_parameters = sum(p.numel() for layer in stack.stacked_mixin_block.layers for p in layer.mixin_module.parameters())
+    except:
+        mixin_parameters = 0
+    
+    
     lm_head_parameters = sum(p.numel() for p in stack.lm_head_module.parameters())
     
     print(f"Total parameters: {total_parameters:,}")
@@ -21,7 +32,7 @@ def count_parameters(stack):
     print(f"Mixin parameters: {mixin_parameters:,}")
     print(f"FFN parameters: {ffn_parameters:,}")
     print(f"LM Head parameters: {lm_head_parameters:,}")
-
+    
 class RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         super().__init__()
@@ -52,18 +63,18 @@ class ResidualBlock(nn.Module):
         return hidden_states
     
 class MixinBlock(nn.Module):
-    def __init__(self, hidden_size, mixin_module, ffn_module, ):
+    def __init__(self, hidden_size, mixin_module, ffn_module):
         super().__init__()
-        self.mixin_module = ResidualBlock(mixin_module, hidden_size)
-        self.ffn_module = ResidualBlock(ffn_module, hidden_size)
-        
+        self.mixin_module = ResidualBlock(mixin_module, hidden_size) if mixin_module is not None else None
+        self.ffn_module = ResidualBlock(ffn_module, hidden_size) if ffn_module is not None else None
+
     def forward(self, hidden_states):
-        
         if self.mixin_module is not None:
             hidden_states = self.mixin_module(hidden_states)
-            
+
         if self.ffn_module is not None:
             hidden_states = self.ffn_module(hidden_states)
+
         return hidden_states
 
 def init_weight(module, initializer_range=1e-2):
@@ -86,8 +97,11 @@ class StackedMixinBlock(nn.Module):
         
         for i, layer in enumerate(self.layers):
             layer.layer_id = i
-            layer.mixin_module.layer_id = i
-            layer.ffn_module.layer_id = i
+            if layer.mixin_module is not None:
+                layer.mixin_module.layer_id = i
+                
+            if layer.ffn_module is not None:
+                layer.ffn_module.layer_id = i
             
         ## Init
         init_weight(self.layers, initializer_range)
@@ -171,4 +185,5 @@ class StackedMixinForCausalLM(nn.Module):
         
         return logits 
             
+        
         
