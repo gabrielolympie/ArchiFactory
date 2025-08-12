@@ -1,6 +1,9 @@
 # ArchiFactory
 Repo aiming at benchmarking several variant of transformer architectures for pre training, on datasets TinyStories and Pints 1.5
 
+## Example
+<img width="1544" height="715" alt="image" src="https://github.com/user-attachments/assets/8dbd0000-5b92-48b5-a8f2-f545122a34f8" />
+
 ## How it works
 Most modern transformer architecture follow a simple pattern:
 - An embedding layer : its role is to convert int tokens into n-th dimensionnal vectors
